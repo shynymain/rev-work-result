@@ -1,5 +1,5 @@
 /**
- * Rev416 rev-work-result worker replacement
+ * Rev417 rev-work-result worker replacement
  * Endpoint: /api/result
  * Purpose:
  * - Prefer explicit targetUrl / race_id / netkeibaRaceId from frontend.
@@ -189,6 +189,29 @@ function htmlTitle(html){ const m=rawNormalize(html).match(/<title[^>]*>([\s\S]*
 function hasPayout(result){
   return !!(result && (result.umaren || result.sanrenpuku || (Array.isArray(result.wide) && result.wide.length)));
 }
+
+function decodeHtmlBuffer(buf, contentType=''){
+  const encs=[];
+  const ct=S(contentType).toLowerCase();
+  const m=ct.match(/charset=([^;\s]+)/i);
+  if(m) encs.push(m[1]);
+  // netkeiba/Japanese legacy pages may be euc-jp or shift_jis; try Japanese encodings before utf-8.
+  encs.push('euc-jp','shift_jis','utf-8');
+  const unique=[...new Set(encs.map(x=>S(x).toLowerCase()).filter(Boolean))];
+  let best={html:'', encodingUsed:'', score:-1, candidates:[]};
+  for(const enc of unique){
+    try{
+      const html=new TextDecoder(enc, {fatal:false}).decode(buf);
+      const score=(/馬連|ワイド|3\s*連\s*複|三連複|払戻|払い戻し|払戻金/.test(html)?1000:0)
+        + (/netkeiba|レース結果|払戻/.test(html)?100:0)
+        - ((html.match(/�/g)||[]).length);
+      best.candidates.push({enc, score, replacementChars:(html.match(/�/g)||[]).length, hasLabels:/馬連|ワイド|3\s*連\s*複|三連複|払戻|払い戻し|払戻金/.test(html)});
+      if(score>best.score) best={html, encodingUsed:enc, score, candidates:best.candidates};
+    }catch(e){}
+  }
+  return best;
+}
+
 async function handleResult(req){
   const url=new URL(req.url);
   const p=url.searchParams;
@@ -209,8 +232,10 @@ async function handleResult(req){
   }
   let res, html='';
   try{
-    res=await fetch(target, {headers:{'user-agent':'Mozilla/5.0 Rev416RaceResultWorker/1.0','accept':'text/html,application/xhtml+xml'}});
-    html=await res.text();
+    res=await fetch(target, {headers:{'user-agent':'Mozilla/5.0 Rev417RaceResultWorker/1.0','accept':'text/html,application/xhtml+xml'}});
+    const buf=await res.arrayBuffer();
+    var decoded=decodeHtmlBuffer(buf, res.headers.get('content-type')||'');
+    html=decoded.html;
   }catch(e){
     return json({ok:false, source:target, result:{wide:[]}, diagnosis:{parseReason:'fetch failed', error:String(e&&e.message||e), targetUrl:target, expectedRaceId:expected}}, 200);
   }
@@ -237,6 +262,8 @@ async function handleResult(req){
       raceIdMatched,
       htmlStatus:res.status,
       htmlChars:html.length,
+      encodingUsed:(typeof decoded!=='undefined'&&decoded.encodingUsed)||'',
+      encodingCandidates:(typeof decoded!=='undefined'&&decoded.candidates)||[],
       tableFound,
       parseReason,
       targetUrl:target,
