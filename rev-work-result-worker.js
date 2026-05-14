@@ -1,5 +1,5 @@
 /**
- * Rev417 rev-work-result worker replacement
+ * Rev418 rev-work-result worker replacement
  * Endpoint: /api/result
  * Purpose:
  * - Prefer explicit targetUrl / race_id / netkeibaRaceId from frontend.
@@ -149,6 +149,67 @@ function allTriEntries(s){
   while((m=re.exec(t))){ const e=entry(combo3(m[1]), money(m[2]+'円')); if(e) out.push(e); }
   return out;
 }
+
+function firstMoneyIndex(sec){
+  const m=S(sec).match(/([1-9][0-9,]{2,8})\s*円/);
+  return m ? S(sec).indexOf(m[0]) : -1;
+}
+function numbersBeforeFirstMoney(sec){
+  const t=S(sec);
+  const idx=firstMoneyIndex(t);
+  const head=idx>=0 ? t.slice(0, idx) : t;
+  return (head.match(/\b(?:[1-9]|1[0-8])\b/g)||[]).map(n=>String(parseInt(n,10)));
+}
+function moneyList(sec){
+  const out=[]; let m;
+  const re=/([1-9][0-9,]{2,8})\s*円/g;
+  while((m=re.exec(S(sec)))){
+    const pay=money(m[1]+'円');
+    if(pay) out.push(pay);
+  }
+  return out;
+}
+function afterLabelSection(text, labelRe, endRes){
+  const t=normalizeText(text);
+  labelRe.lastIndex=0;
+  const m=labelRe.exec(t);
+  if(!m) return '';
+  let rest=t.slice(m.index + m[0].length);
+  let end=rest.length;
+  for(const re of endRes){
+    re.lastIndex=0;
+    const mm=re.exec(rest);
+    if(mm) end=Math.min(end, mm.index);
+  }
+  return rest.slice(0,end);
+}
+function parseSequentialLabelPayouts(text){
+  const t=normalizeText(text);
+  const out={wide:[]};
+  const umSec=afterLabelSection(t,/馬\s*連|馬連/i,[/ワイド|馬\s*単|3\s*連\s*複|三連複|3\s*連\s*単/i]);
+  const umNums=numbersBeforeFirstMoney(umSec);
+  const umPays=moneyList(umSec);
+  if(umNums.length>=2 && umPays.length>=1){
+    out.umaren=entry([umNums[0],umNums[1]].sort((a,b)=>parseInt(a)-parseInt(b)).join('-'), umPays[0]);
+  }
+  const wiSec=afterLabelSection(t,/ワイド/i,[/馬\s*単|3\s*連\s*複|三連複|3\s*連\s*単/i]);
+  const wiNums=numbersBeforeFirstMoney(wiSec);
+  const wiPays=moneyList(wiSec);
+  const pairCount=Math.min(Math.floor(wiNums.length/2), wiPays.length, 4);
+  for(let i=0;i<pairCount;i++){
+    const combo=[wiNums[i*2],wiNums[i*2+1]].sort((a,b)=>parseInt(a)-parseInt(b)).join('-');
+    const e=entry(combo, wiPays[i]);
+    if(e && !out.wide.some(x=>x.split(' ')[0]===combo)) out.wide.push(e);
+  }
+  const triSec=afterLabelSection(t,/3\s*連\s*複|三連複/i,[/3\s*連\s*単|馬\s*単/i]);
+  const triNums=numbersBeforeFirstMoney(triSec);
+  const triPays=moneyList(triSec);
+  if(triNums.length>=3 && triPays.length>=1){
+    out.sanrenpuku=entry(triNums.slice(0,3).sort((a,b)=>parseInt(a)-parseInt(b)).join('-'), triPays[0]);
+  }
+  return out;
+}
+
 function mergePayout(a,b){
   const out={wide:[]};
   if(a){ if(a.umaren) out.umaren=a.umaren; if(a.sanrenpuku) out.sanrenpuku=a.sanrenpuku; if(Array.isArray(a.wide)) out.wide=a.wide.slice(); }
@@ -164,11 +225,21 @@ function parsePayoutsRobust(html){
   if(hasPayout(out)) return out;
   const raw=rawNormalize(html);
   const blocks=findPaybackBlocks(raw);
-  for(const b of blocks){ out=mergePayout(out, parsePayoutsFromText(b)); if(hasPayout(out)) return out; }
+  for(const b of blocks){
+    out=mergePayout(out, parsePayoutsFromText(b));
+    out=mergePayout(out, parseSequentialLabelPayouts(b));
+    if(hasPayout(out)) return out;
+  }
+  // Rev418: netkeiba often renders labels as flat text, e.g.
+  // 馬連 8 16 750円 / ワイド 8 16 7 16 7 8 370円 990円 1,460円 / 3連複 7 8 16 4,440円
+  // Directly recover from this label-neighborhood format before using looser global fallbacks.
+  out=mergePayout(out, parseSequentialLabelPayouts(raw));
+  if(hasPayout(out)) return out;
   // Label-neighborhood fallback: parse combo+money within label-specific windows, without relying on table tags.
   const umBlock=aroundLabel(raw,/馬\s*連|馬連/i,1200);
   const wideBlock=aroundLabel(raw,/ワイド/i,1600);
   const triBlock=aroundLabel(raw,/3\s*連\s*複|三連複/i,1400);
+  out=mergePayout(out, parseSequentialLabelPayouts([umBlock,wideBlock,triBlock].join(' ')));
   const u=allPairEntries(umBlock)[0]; if(u) out.umaren=u;
   const ws=allPairEntries(wideBlock); if(ws.length) out.wide=ws.slice(0,4);
   const tr=allTriEntries(triBlock)[0]; if(tr) out.sanrenpuku=tr;
@@ -176,11 +247,12 @@ function parsePayoutsRobust(html){
   // Last fallback: if labels are present but OCR-style spacing ruined sectioning, infer in order from global payback-ish snippets only.
   const payBlock=aroundLabel(raw,/払戻|払い戻し|払戻金|Pay_Back|payback|Result_Pay_Back/i,4000);
   if(payBlock){
+    out=mergePayout(out, parseSequentialLabelPayouts(payBlock));
     const pairs=allPairEntries(payBlock);
     const tris=allTriEntries(payBlock);
-    if(pairs[0]) out.umaren=pairs[0];
-    if(pairs.length>1) out.wide=pairs.slice(1,5);
-    if(tris[0]) out.sanrenpuku=tris[0];
+    if(!out.umaren && pairs[0]) out.umaren=pairs[0];
+    if((!out.wide || !out.wide.length) && pairs.length>1) out.wide=pairs.slice(1,5);
+    if(!out.sanrenpuku && tris[0]) out.sanrenpuku=tris[0];
   }
   return out;
 }
