@@ -1,5 +1,5 @@
 /**
- * Rev418 rev-work-result worker replacement
+ * Rev419 rev-work-result worker replacement
  * Endpoint: /api/result
  * Purpose:
  * - Prefer explicit targetUrl / race_id / netkeibaRaceId from frontend.
@@ -222,28 +222,32 @@ function mergePayout(a,b){
 }
 function parsePayoutsRobust(html){
   let out=parsePayoutsFromText(html);
-  if(hasPayout(out)) return out;
+  // Rev419: partial payout, especially wide 2点, must not stop robust parsing.
+  // Continue to sequential label parser until ワイド3点まで復元できる。
+  if(hasCompleteCorePayout(out)) return out;
   const raw=rawNormalize(html);
   const blocks=findPaybackBlocks(raw);
   for(const b of blocks){
     out=mergePayout(out, parsePayoutsFromText(b));
     out=mergePayout(out, parseSequentialLabelPayouts(b));
-    if(hasPayout(out)) return out;
+    if(hasCompleteCorePayout(out)) return out;
   }
   // Rev418: netkeiba often renders labels as flat text, e.g.
   // 馬連 8 16 750円 / ワイド 8 16 7 16 7 8 370円 990円 1,460円 / 3連複 7 8 16 4,440円
   // Directly recover from this label-neighborhood format before using looser global fallbacks.
   out=mergePayout(out, parseSequentialLabelPayouts(raw));
-  if(hasPayout(out)) return out;
+  if(hasCompleteCorePayout(out)) return out;
   // Label-neighborhood fallback: parse combo+money within label-specific windows, without relying on table tags.
   const umBlock=aroundLabel(raw,/馬\s*連|馬連/i,1200);
   const wideBlock=aroundLabel(raw,/ワイド/i,1600);
   const triBlock=aroundLabel(raw,/3\s*連\s*複|三連複/i,1400);
   out=mergePayout(out, parseSequentialLabelPayouts([umBlock,wideBlock,triBlock].join(' ')));
   const u=allPairEntries(umBlock)[0]; if(u) out.umaren=u;
-  const ws=allPairEntries(wideBlock); if(ws.length) out.wide=ws.slice(0,4);
+  const ws=allPairEntries(wideBlock);
+  // Rev419: do not overwrite sequential 3-point wide with a looser 2-point extraction.
+  if(ws.length && (!Array.isArray(out.wide) || ws.length > out.wide.length)) out.wide=ws.slice(0,4);
   const tr=allTriEntries(triBlock)[0]; if(tr) out.sanrenpuku=tr;
-  if(hasPayout(out)) return out;
+  if(hasCompleteCorePayout(out)) return out;
   // Last fallback: if labels are present but OCR-style spacing ruined sectioning, infer in order from global payback-ish snippets only.
   const payBlock=aroundLabel(raw,/払戻|払い戻し|払戻金|Pay_Back|payback|Result_Pay_Back/i,4000);
   if(payBlock){
@@ -260,6 +264,12 @@ function htmlTitle(html){ const m=rawNormalize(html).match(/<title[^>]*>([\s\S]*
 
 function hasPayout(result){
   return !!(result && (result.umaren || result.sanrenpuku || (Array.isArray(result.wide) && result.wide.length)));
+}
+function hasCompleteWide(result){
+  return !!(result && Array.isArray(result.wide) && result.wide.length >= 3);
+}
+function hasCompleteCorePayout(result){
+  return !!(result && result.umaren && result.sanrenpuku && hasCompleteWide(result));
 }
 
 function decodeHtmlBuffer(buf, contentType=''){
@@ -321,7 +331,7 @@ async function handleResult(req){
   if(!ok){
     parseReason=tableFound ? 'payout table labels found but complete combo+money not parsed' : 'payout table labels not found';
   }else{
-    parseReason='payout parsed';
+    parseReason=hasCompleteCorePayout(result) ? 'payout parsed complete' : 'payout parsed partial';
   }
   const body={
     ok,
@@ -340,7 +350,12 @@ async function handleResult(req){
       parseReason,
       targetUrl:target,
       title: htmlTitle(html),
-      labelSnippets: snippets
+      labelSnippets: snippets,
+      rev419WideDiag: {
+        wideCount: Array.isArray(result.wide) ? result.wide.length : 0,
+        wideValues: Array.isArray(result.wide) ? result.wide : [],
+        completeCore: hasCompleteCorePayout(result)
+      }
     }
   };
   if(diagnose){ body.textPreview=htmlText.slice(0,700); body.rawLabelSnippets=snippets; }
