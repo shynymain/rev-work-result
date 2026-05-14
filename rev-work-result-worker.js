@@ -1,5 +1,5 @@
 /**
- * Rev415 rev-work-result worker replacement
+ * Rev416 rev-work-result worker replacement
  * Endpoint: /api/result
  * Purpose:
  * - Prefer explicit targetUrl / race_id / netkeibaRaceId from frontend.
@@ -88,6 +88,104 @@ function parsePayoutsFromText(text){
   if(tri && (m=triRe.exec(tri))) out.sanrenpuku=entry(combo3(m[1]), money(m[2]+'円'));
   return out;
 }
+
+function decodeEscapes(s){
+  s=S(s);
+  try{ s=s.replace(/\\u([0-9a-fA-F]{4})/g,(_,h)=>String.fromCharCode(parseInt(h,16))); }catch(e){}
+  return s
+    .replace(/&nbsp;|&#160;/g,' ')
+    .replace(/&amp;/g,'&')
+    .replace(/&lt;/g,'<').replace(/&gt;/g,'>')
+    .replace(/&quot;/g,'"').replace(/&#39;/g,"'")
+    .replace(/&yen;/g,'円');
+}
+function rawNormalize(html){ return decodeEscapes(html).replace(/[０-９]/g,c=>String.fromCharCode(c.charCodeAt(0)-0xFEE0)).replace(/[－―ー−–]/g,'-'); }
+function aroundLabel(raw, labelRe, span=900){
+  const t=rawNormalize(raw);
+  const m=t.search(labelRe);
+  if(m<0) return '';
+  return t.slice(Math.max(0,m-span), Math.min(t.length,m+span));
+}
+function collectLabelSnippets(raw){
+  const t=rawNormalize(raw);
+  const labels=[['harai','払戻|払い戻し|払戻金'],['umaren','馬\\s*連|馬連'],['wide','ワイド'],['tri','3\\s*連\\s*複|三連複'],['payback','Pay_Back|payback|Payout|Result_Pay_Back|Race_Harai']];
+  const out={};
+  for(const [k,pat] of labels){
+    const re=new RegExp(pat,'i');
+    const i=t.search(re);
+    out[k]= i>=0 ? stripTags(t.slice(Math.max(0,i-250), Math.min(t.length,i+450))).slice(0,700) : '';
+  }
+  return out;
+}
+function findPaybackBlocks(raw){
+  const h=rawNormalize(raw);
+  const blocks=[];
+  const pats=[
+    /<[^>]*(?:Result[_-]?Pay[_-]?Back|Pay[_-]?Back|Race[_-]?Harai|払い戻し|払戻)[^>]*>[\s\S]{0,12000}/ig,
+    /(?:払戻|払い戻し|払戻金)[\s\S]{0,12000}/ig,
+    /(?:馬\s*連|馬連)[\s\S]{0,8000}/ig
+  ];
+  for(const re of pats){
+    let m; let guard=0;
+    while((m=re.exec(h)) && guard++<8){
+      blocks.push(m[0]);
+    }
+  }
+  return blocks;
+}
+function allPairEntries(s){
+  const t=normalizeText(s);
+  const out=[];
+  const re=/((?:[1-9]|1[0-8])\s*[-－]\s*(?:[1-9]|1[0-8]))[\s\S]{0,80}?([1-9][0-9,]{2,8})\s*円?/g;
+  let m;
+  while((m=re.exec(t))){ const e=entry(combo2(m[1]), money(m[2]+'円')); if(e) out.push(e); }
+  return out;
+}
+function allTriEntries(s){
+  const t=normalizeText(s);
+  const out=[];
+  const re=/((?:[1-9]|1[0-8])\s*[-－]\s*(?:[1-9]|1[0-8])\s*[-－]\s*(?:[1-9]|1[0-8]))[\s\S]{0,100}?([1-9][0-9,]{2,8})\s*円?/g;
+  let m;
+  while((m=re.exec(t))){ const e=entry(combo3(m[1]), money(m[2]+'円')); if(e) out.push(e); }
+  return out;
+}
+function mergePayout(a,b){
+  const out={wide:[]};
+  if(a){ if(a.umaren) out.umaren=a.umaren; if(a.sanrenpuku) out.sanrenpuku=a.sanrenpuku; if(Array.isArray(a.wide)) out.wide=a.wide.slice(); }
+  if(b){
+    if(!out.umaren && b.umaren) out.umaren=b.umaren;
+    if(!out.sanrenpuku && b.sanrenpuku) out.sanrenpuku=b.sanrenpuku;
+    if(Array.isArray(b.wide)) for(const x of b.wide){ if(x && !out.wide.some(y=>y.split(' ')[0]===x.split(' ')[0])) out.wide.push(x); }
+  }
+  return out;
+}
+function parsePayoutsRobust(html){
+  let out=parsePayoutsFromText(html);
+  if(hasPayout(out)) return out;
+  const raw=rawNormalize(html);
+  const blocks=findPaybackBlocks(raw);
+  for(const b of blocks){ out=mergePayout(out, parsePayoutsFromText(b)); if(hasPayout(out)) return out; }
+  // Label-neighborhood fallback: parse combo+money within label-specific windows, without relying on table tags.
+  const umBlock=aroundLabel(raw,/馬\s*連|馬連/i,1200);
+  const wideBlock=aroundLabel(raw,/ワイド/i,1600);
+  const triBlock=aroundLabel(raw,/3\s*連\s*複|三連複/i,1400);
+  const u=allPairEntries(umBlock)[0]; if(u) out.umaren=u;
+  const ws=allPairEntries(wideBlock); if(ws.length) out.wide=ws.slice(0,4);
+  const tr=allTriEntries(triBlock)[0]; if(tr) out.sanrenpuku=tr;
+  if(hasPayout(out)) return out;
+  // Last fallback: if labels are present but OCR-style spacing ruined sectioning, infer in order from global payback-ish snippets only.
+  const payBlock=aroundLabel(raw,/払戻|払い戻し|払戻金|Pay_Back|payback|Result_Pay_Back/i,4000);
+  if(payBlock){
+    const pairs=allPairEntries(payBlock);
+    const tris=allTriEntries(payBlock);
+    if(pairs[0]) out.umaren=pairs[0];
+    if(pairs.length>1) out.wide=pairs.slice(1,5);
+    if(tris[0]) out.sanrenpuku=tris[0];
+  }
+  return out;
+}
+function htmlTitle(html){ const m=rawNormalize(html).match(/<title[^>]*>([\s\S]*?)<\/title>/i); return m ? stripTags(m[1]).slice(0,160) : ''; }
+
 function hasPayout(result){
   return !!(result && (result.umaren || result.sanrenpuku || (Array.isArray(result.wide) && result.wide.length)));
 }
@@ -111,15 +209,16 @@ async function handleResult(req){
   }
   let res, html='';
   try{
-    res=await fetch(target, {headers:{'user-agent':'Mozilla/5.0 Rev415RaceResultWorker/1.0','accept':'text/html,application/xhtml+xml'}});
+    res=await fetch(target, {headers:{'user-agent':'Mozilla/5.0 Rev416RaceResultWorker/1.0','accept':'text/html,application/xhtml+xml'}});
     html=await res.text();
   }catch(e){
     return json({ok:false, source:target, result:{wide:[]}, diagnosis:{parseReason:'fetch failed', error:String(e&&e.message||e), targetUrl:target, expectedRaceId:expected}}, 200);
   }
-  const result=parsePayoutsFromText(html);
+  const result=parsePayoutsRobust(html);
   const htmlText=normalizeText(html);
   const got=(target.match(/race_id=(\d{10,12})/)||[])[1]||'';
-  const tableFound=/馬\s*連|ワイド|3\s*連\s*複|三連複/.test(htmlText);
+  const snippets=collectLabelSnippets(html);
+  const tableFound=/馬\s*連|ワイド|3\s*連\s*複|三連複|払戻|払い戻し|Pay_Back|Result_Pay_Back/i.test(htmlText + ' ' + rawNormalize(html));
   const raceIdMatched=!!(expected && got && expected===got);
   const ok=hasPayout(result);
   if(!ok){
@@ -140,10 +239,12 @@ async function handleResult(req){
       htmlChars:html.length,
       tableFound,
       parseReason,
-      targetUrl:target
+      targetUrl:target,
+      title: htmlTitle(html),
+      labelSnippets: snippets
     }
   };
-  if(diagnose){ body.textPreview=htmlText.slice(0,500); }
+  if(diagnose){ body.textPreview=htmlText.slice(0,700); body.rawLabelSnippets=snippets; }
   return json(body, 200);
 }
 export default {
