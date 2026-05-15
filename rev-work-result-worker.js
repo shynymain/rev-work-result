@@ -1,5 +1,5 @@
 /**
- * Rev419 rev-work-result worker replacement
+ * Rev425 rev-work-result worker replacement
  * Endpoint: /api/result
  * Purpose:
  * - Prefer explicit targetUrl / race_id / netkeibaRaceId from frontend.
@@ -210,6 +210,46 @@ function parseSequentialLabelPayouts(text){
   return out;
 }
 
+
+function orderEntry(no, name){
+  no=S(no).replace(/\D/g,'');
+  if(!no || parseInt(no,10)<1 || parseInt(no,10)>18) return null;
+  return { no:String(parseInt(no,10)), name:S(name) };
+}
+function parseOrderFromSanrentan(text){
+  const sec=afterLabelSection(text,/3\s*連\s*単|三連単/i,[]);
+  const nums=numbersBeforeFirstMoney(sec);
+  if(nums.length>=3){
+    return [orderEntry(nums[0],''), orderEntry(nums[1],''), orderEntry(nums[2],'')].filter(Boolean);
+  }
+  return [];
+}
+function parseOrderFromResultTable(text){
+  const t=normalizeText(text);
+  const start=t.search(/着\s*順|着順|確定|入線|全着順/i);
+  if(start<0) return [];
+  const sec=t.slice(start, Math.min(t.length, start+5000));
+  const out=[];
+  // flat netkeiba-ish row fallback: "1 8 16 カウンターセブン ... 2 4 8 ハニーローリエ ..."
+  const re=/(?:^|\s)([123])\s+(?:[1-8])\s+((?:1[0-8]|[1-9]))\s+([^\d\s<]{2,30})/g;
+  let m; let guard=0;
+  while((m=re.exec(sec)) && guard++<20){
+    const rank=parseInt(m[1],10);
+    if(rank>=1 && rank<=3 && !out[rank-1]) out[rank-1]=orderEntry(m[2], m[3]);
+  }
+  return out.filter(Boolean);
+}
+function parseOrderRobust(html){
+  const raw=rawNormalize(html);
+  let order=parseOrderFromSanrentan(raw);
+  let source='sanrentan';
+  if(order.length<3){ order=parseOrderFromResultTable(raw); source='resultTable'; }
+  if(order.length>=3){
+    return {order:order.slice(0,3), source};
+  }
+  return {order:[], source:'none'};
+}
+
 function mergePayout(a,b){
   const out={wide:[]};
   if(a){ if(a.umaren) out.umaren=a.umaren; if(a.sanrenpuku) out.sanrenpuku=a.sanrenpuku; if(Array.isArray(a.wide)) out.wide=a.wide.slice(); }
@@ -322,6 +362,8 @@ async function handleResult(req){
     return json({ok:false, source:target, result:{wide:[]}, diagnosis:{parseReason:'fetch failed', error:String(e&&e.message||e), targetUrl:target, expectedRaceId:expected}}, 200);
   }
   const result=parsePayoutsRobust(html);
+  const orderInfo=parseOrderRobust(html);
+  if(orderInfo.order && orderInfo.order.length>=3){ result.order=orderInfo.order; result.firstNo=orderInfo.order[0].no; result.secondNo=orderInfo.order[1].no; result.thirdNo=orderInfo.order[2].no; }
   const htmlText=normalizeText(html);
   const got=(target.match(/race_id=(\d{10,12})/)||[])[1]||'';
   const snippets=collectLabelSnippets(html);
@@ -355,6 +397,11 @@ async function handleResult(req){
         wideCount: Array.isArray(result.wide) ? result.wide.length : 0,
         wideValues: Array.isArray(result.wide) ? result.wide : [],
         completeCore: hasCompleteCorePayout(result)
+      },
+      rev425OrderDiag: {
+        orderSource: orderInfo.source,
+        orderCount: orderInfo.order ? orderInfo.order.length : 0,
+        order: orderInfo.order || []
       }
     }
   };
