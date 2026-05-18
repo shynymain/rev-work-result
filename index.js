@@ -1,4 +1,4 @@
-// Rev610 result Worker full replacement for Cloudflare Workers
+// Rev611 result Worker full replacement for Cloudflare Workers
 // Endpoint: /api/result
 // Fixes: 16-digit race_id priority, no 12-digit truncation, CORS, parser diagnostics.
 
@@ -34,7 +34,7 @@ export default {
         source,
         result: parsed.result,
         diagnosis: {
-          rev606:true, rev607:true, rev608:true, rev609:true, rev610:true,
+          rev606:true, rev607:true, rev608:true, rev609:true, rev610:true,rev611:true,
           sourceBranch: targetUrl ? 'targetUrl' : 'race_id',
           expectedRaceId,
           workerRaceId: htmlRaceId,
@@ -48,13 +48,14 @@ export default {
         }
       });
     } catch (e) {
-      return json({ ok:false, source:'', result:{wide:[]}, diagnosis:{rev606:true, rev607:true, rev608:true, rev609:true, rev610:true, error:String(e && e.message || e)} }, 200);
+      return json({ ok:false, source:'', result:{wide:[]}, diagnosis:{rev606:true, rev607:true, rev608:true, rev609:true, rev610:true,rev611:true, error:String(e && e.message || e)} }, 200);
     }
   }
 };
 
 function json(obj, status=200){ return new Response(JSON.stringify(obj, null, 2), { status, headers:CORS_HEADERS }); }
 function digits(v){ return String(v || '').replace(/\D/g, ''); }
+function normalizeRaceId12(v){ const d=digits(v); if(d.length===16) return d.slice(0,4)+d.slice(8,16); if(d.length>=12) return d.slice(0,12); return d; }
 function dec(v){ try { return decodeURIComponent(String(v || '')); } catch(e){ return String(v || ''); } }
 function first(...vals){ for (const v of vals){ if (v !== undefined && v !== null && String(v).trim() !== '') return String(v); } return ''; }
 function getParam(u, k){ return u.searchParams.get(k) || ''; }
@@ -70,16 +71,16 @@ function pickTargetUrl(u, body, page){
 function normalizePage(url, page){ return String(url).replace(/\/(shutuba|odds|result)\.html/i, `/${page}`); }
 function pickRaceId(u, body, targetUrl){
   const fromUrl = pickRaceIdFromText(targetUrl);
-  if (fromUrl.length === 16) return fromUrl;
+  if (fromUrl.length >= 12) return normalizeRaceId12(fromUrl);
   const keys = ['race_id','netkeibaRaceId','raceId','race_id16','raceId16','netkeibaRaceId16','nkRaceId16','race_id_full','netkeibaRaceIdFull','fullRaceId','expectedRaceId','requestRaceId','forceRaceId','strictRaceId','nkRaceId'];
   for (const k of keys) {
     const d = digits(first(getParam(u,k), body && body[k]));
-    if (d.length >= 16) return d.slice(0,16);
+    if (d.length >= 12) return normalizeRaceId12(d);
   }
-  if (fromUrl) return fromUrl;
+  if (fromUrl) return normalizeRaceId12(fromUrl);
   for (const k of keys) {
     const d = digits(first(getParam(u,k), body && body[k]));
-    if (d.length >= 12) return d;
+    if (d.length >= 12) return normalizeRaceId12(d);
   }
   return '';
 }
