@@ -1,6 +1,6 @@
-// Rev613 result Worker full replacement for Cloudflare Workers
+// Rev690 result Worker full replacement for Cloudflare Workers
 // Endpoint: /api/result
-// Fixes: canonical 12-digit netkeiba race_id, strict finish/payout parser, no global number scan.
+// Fixes: keep 16-digit race_id, try 16/12 fallback URLs, strict empty diagnostics, new/old DOM payout parser.
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -21,20 +21,22 @@ export default {
       const targetUrl = pickTargetUrl(reqUrl, body, 'result.html');
       const expectedRaceId = pickRaceId(reqUrl, body, targetUrl);
       if (!targetUrl && !expectedRaceId) {
-        return json({ ok:false, source:'', result:{wide:[]}, diagnosis:{ parseReason:'missing explicit race_id/netkeibaRaceId/targetUrl', requestRaceId:'', key:'' } });
+        return json({ ok:false, source:'', result:emptyResult(), diagnosis:{ rev690:true, parseReason:'missing explicit race_id/netkeibaRaceId/targetUrl', requestRaceId:'', key:'' } });
       }
-      const source = targetUrl || `https://race.netkeiba.com/race/result.html?race_id=${expectedRaceId}&rf=race_submenu`;
-      const fetched = await fetchNetkeibaHtml(source);
+      const candidates = buildResultUrlCandidates(targetUrl, expectedRaceId);
+      const attempt = await fetchAndParseBest(candidates, expectedRaceId);
+      const source = attempt.source || candidates[0] || '';
+      const fetched = attempt.fetched || {status:0, html:'', encodingUsed:'none'};
       const html = fetched.html || '';
-      const htmlRaceId = normalizeRaceId12(pickRaceIdFromText(html) || expectedRaceId);
+      const htmlRaceId = pickRaceIdFromText(html) || expectedRaceId;
       const raceIdMatched = matchRaceId(expectedRaceId, htmlRaceId);
-      const parsed = parseResultHtml(html);
+      const parsed = attempt.parsed || parseResultHtml(html);
       return json({
         ok: parsed.ok,
         source,
         result: parsed.result,
         diagnosis: {
-          rev606:true, rev607:true, rev608:true, rev609:true, rev610:true, rev611:true, rev612:true, rev613:true,
+          rev606:true, rev607:true, rev608:true, rev609:true, rev610:true, rev611:true, rev612:true, rev613:true, rev690:true,
           sourceBranch: targetUrl ? 'targetUrl' : 'race_id',
           expectedRaceId,
           workerRaceId: htmlRaceId,
@@ -46,19 +48,22 @@ export default {
           sectionHits: parsed.sectionHits,
           finishProbe: parsed.finishProbe,
           payoutProbe: parsed.payoutProbe,
-          parser: 'rev613_strict_result_table_finish_payout_table_only',
+          parser: 'rev690_keep16_fallback_url_strict_result_parser',
+          urlAttempts: attempt.attempts || [],
           htmlProbe: resultHtmlProbe(html)
         }
       });
     } catch (e) {
-      return json({ ok:false, source:'', result:{wide:[]}, diagnosis:{rev606:true, rev607:true, rev608:true, rev609:true, rev610:true, rev611:true, rev612:true, rev613:true, error:String(e && e.message || e)} }, 200);
+      return json({ ok:false, source:'', result:{wide:[]}, diagnosis:{rev606:true, rev607:true, rev608:true, rev609:true, rev610:true, rev611:true, rev612:true, rev613:true, rev690:true, error:String(e && e.message || e)} }, 200);
     }
   }
 };
 
 function json(obj, status=200){ return new Response(JSON.stringify(obj, null, 2), { status, headers:CORS_HEADERS }); }
 function digits(v){ return String(v || '').replace(/\D/g, ''); }
-function normalizeRaceId12(v){ const d=digits(v); if(d.length===16) return d.slice(0,4)+d.slice(8,16); if(d.length>=12) return d.slice(0,12); return d; }
+function normalizeRaceIdKeep(v){ const d=digits(v); if(d.length>=16) return d.slice(0,16); if(d.length>=12) return d.slice(0,12); return d; }
+function raceIdToLegacy12(v){ const d=digits(v); if(d.length>=16) return d.slice(0,4)+d.slice(8,16); if(d.length>=12) return d.slice(0,12); return d; }
+function emptyResult(){ return { first:null, second:null, third:null, umaren:null, wide:[], sanrenpuku:null, payouts:{} }; }
 function dec(v){ try { return decodeURIComponent(String(v || '')); } catch(e){ return String(v || ''); } }
 function first(...vals){ for (const v of vals){ if (v !== undefined && v !== null && String(v).trim() !== '') return String(v); } return ''; }
 function getParam(u, k){ return u.searchParams.get(k) || ''; }
@@ -72,15 +77,51 @@ function pickTargetUrl(u, body, page){
   return rid ? `https://race.netkeiba.com/race/${page}?race_id=${rid}&rf=race_submenu` : '';
 }
 function normalizePage(url, page){ return String(url).replace(/\/(shutuba|odds|result)\.html/i, `/${page}`); }
+
+function buildResultUrlCandidates(targetUrl, raceId){
+  const out=[];
+  const add=(u)=>{ if(u && !out.includes(u)) out.push(u); };
+  if (targetUrl) add(normalizePage(targetUrl, 'result.html'));
+  const id16 = normalizeRaceIdKeep(raceId);
+  const id12 = raceIdToLegacy12(raceId);
+  if (id16) {
+    add(`https://race.netkeiba.com/race/result.html?race_id=${id16}&rf=race_submenu`);
+    add(`https://race.netkeiba.com/race/result.html?race_id=${id16}`);
+  }
+  if (id12 && id12 !== id16) {
+    add(`https://race.netkeiba.com/race/result.html?race_id=${id12}&rf=race_submenu`);
+    add(`https://race.netkeiba.com/race/result.html?race_id=${id12}`);
+  }
+  return out;
+}
+function resultHasData(parsed){
+  const r=(parsed && parsed.result) || {};
+  return !!(r.first || r.second || r.third || r.umaren || (r.wide && r.wide.length) || r.sanrenpuku);
+}
+async function fetchAndParseBest(candidates, expectedRaceId){
+  const attempts=[];
+  let fallback=null;
+  for (const source of candidates) {
+    const fetched = await fetchNetkeibaHtml(source);
+    const parsed = parseResultHtml(fetched.html || '');
+    const htmlRaceId = pickRaceIdFromText(fetched.html || '');
+    const data = resultHasData(parsed);
+    attempts.push({ source, status:fetched.status, chars:(fetched.html||'').length, encoding:fetched.encodingUsed, htmlRaceId, raceIdMatched:matchRaceId(expectedRaceId, htmlRaceId || expectedRaceId), ok:parsed.ok, data, reason:parsed.reason });
+    if (!fallback) fallback={source, fetched, parsed};
+    if (data) return {source, fetched, parsed, attempts};
+  }
+  return Object.assign(fallback || {}, {attempts});
+}
+
 function pickRaceId(u, body, targetUrl){
   const fromUrl = pickRaceIdFromText(targetUrl);
-  if (fromUrl.length >= 12) return normalizeRaceId12(fromUrl);
+  if (fromUrl.length >= 12) return normalizeRaceIdKeep(fromUrl);
   const keys = ['canonicalRaceId12','raceId12','race_id','netkeibaRaceId','raceId','race_id16','raceId16','netkeibaRaceId16','nkRaceId16','race_id_full','netkeibaRaceIdFull','fullRaceId','expectedRaceId','requestRaceId','forceRaceId','strictRaceId','nkRaceId'];
   for (const k of keys) {
     const d = digits(first(getParam(u,k), body && body[k]));
-    if (d.length >= 12) return normalizeRaceId12(d);
+    if (d.length >= 12) return normalizeRaceIdKeep(d);
   }
-  if (fromUrl) return normalizeRaceId12(fromUrl);
+  if (fromUrl) return normalizeRaceIdKeep(fromUrl);
   return '';
 }
 function pickRaceIdFromText(text){
@@ -91,18 +132,18 @@ function pickRaceIdFromText(text){
   return m ? m[1] : '';
 }
 function matchRaceId(a,b){
-  a=normalizeRaceId12(a); b=normalizeRaceId12(b);
-  return !!a && !!b && a === b;
+  const aa=[normalizeRaceIdKeep(a), raceIdToLegacy12(a)].filter(Boolean);
+  const bb=[normalizeRaceIdKeep(b), raceIdToLegacy12(b)].filter(Boolean);
+  return aa.some(x => bb.includes(x));
 }
 async function fetchNetkeibaHtml(url){
-  const res = await fetch(url, { headers:{ 'User-Agent':'Mozilla/5.0 Rev613Worker', 'Accept':'text/html,*/*' } });
+  const res = await fetch(url, { headers:{ 'User-Agent':'Mozilla/5.0 (compatible; Rev690ResultWorker/1.0)', 'Accept':'text/html,application/xhtml+xml,*/*', 'Accept-Language':'ja,en-US;q=0.7,en;q=0.3', 'Referer':'https://race.netkeiba.com/' } });
   const buf = await res.arrayBuffer();
   let html = '';
   let encodingUsed = 'utf-8';
-  try { html = new TextDecoder('euc-jp').decode(buf); encodingUsed='euc-jp'; }
-  catch(e){ html = new TextDecoder('utf-8').decode(buf); encodingUsed='utf-8'; }
-  if (!/払戻|着順|馬連|ワイド|単勝|複勝|RaceTable|ResultTable/.test(html)) {
-    try { html = new TextDecoder('utf-8').decode(buf); encodingUsed='utf-8'; } catch(e) {}
+  try { html = new TextDecoder('utf-8').decode(buf); encodingUsed='utf-8'; } catch(e){ html=''; }
+  if (!/払戻|着順|馬連|ワイド|単勝|複勝|RaceTable|ResultTable|PayBack|払い戻し/.test(html)) {
+    try { const h2 = new TextDecoder('euc-jp').decode(buf); if (/払戻|着順|馬連|ワイド|単勝|複勝|RaceTable|ResultTable|PayBack|払い戻し/.test(h2) || h2.length > html.length) { html=h2; encodingUsed='euc-jp'; } } catch(e) {}
   }
   return { status:res.status, html, encodingUsed };
 }
@@ -235,7 +276,7 @@ function resultHtmlProbe(html){
 }
 
 function parseResultHtml(html){
-  const result = { first:null, second:null, third:null, umaren:null, wide:[], sanrenpuku:null, payouts:{} };
+  const result = emptyResult();
   const text = normalizeText(html);
   const trs = String(html||'').match(/<tr[\s\S]*?<\/tr>/gi) || [];
   const sectionHits = {
@@ -284,7 +325,7 @@ function parseResultHtml(html){
   }
 
   const ok = !!(result.umaren || result.wide.length || result.sanrenpuku || result.first || result.second || result.third);
-  return { ok, result, reason: ok ? 'parsed_by_rev613_strict_finish_payout_table' : 'html_fetched_but_result_labels_not_parsed', sectionHits, finishProbe, payoutProbe };
+  return { ok, result, reason: ok ? 'parsed_by_rev690_strict_finish_payout_table' : 'html_fetched_but_result_labels_not_parsed_rev690', sectionHits, finishProbe, payoutProbe };
 }
 function parseBetCells(cells,n){
   const c=comboStrictFromCells(cells,n);
