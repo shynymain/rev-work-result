@@ -1,8 +1,8 @@
-// Rev750 result Worker: Japanese result page + en.netkeiba payback-list fallback + top-level HTML diagnostics
+// Rev753 result Worker: Japanese result page + en.netkeiba payback-list fallback + top-level HTML diagnostics
 // Purpose: avoid HTTP 200 EMPTY loops when race.netkeiba result HTML is blocked/short.
 // Contract: keep EMPTY diagnostics, but try en.netkeiba by kaisai_date when Japanese HTML is empty or unparsable.
 
-const REV = 'rev752-result-worker-fetch-exception-diag';
+const REV = 'rev753-result-worker-fetch-exception-diag';
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
@@ -95,76 +95,27 @@ async function readBody(request) {
 }
 
 async function fetchText(url, attempts, tag, opt = {}) {
-  const started = Date.now();
-  const uaDesktop = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36';
-  const uaMobile = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
+  const uaDesktop = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125 Safari/537.36';
+  const uaMobile = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1';
   const headers = {
     'user-agent': opt.mobile ? uaMobile : uaDesktop,
     'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
     'accept-language': opt.lang || 'ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7',
     'referer': opt.referer || 'https://race.netkeiba.com/',
-    'origin': opt.origin || (opt.referer ? new URL(opt.referer).origin : 'https://race.netkeiba.com'),
-    'cache-control': 'no-cache, no-store, max-age=0',
+    'cache-control': 'no-cache',
     'pragma': 'no-cache',
-    'upgrade-insecure-requests': '1',
-    'sec-fetch-site': 'same-origin',
-    'sec-fetch-mode': 'navigate',
-    'sec-fetch-dest': 'document'
+    'upgrade-insecure-requests': '1'
   };
-
-  const sep = url.includes('?') ? '&' : '?';
-  const bustUrl = `${url}${sep}revdiag=752&t=${Date.now()}`;
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => { try { ctrl.abort('REV752_TIMEOUT_12000MS'); } catch (_) {} }, opt.timeoutMs || 12000);
-
   try {
-    const r = await fetch(bustUrl, {
-      method: 'GET',
-      headers,
-      redirect: 'follow',
-      signal: ctrl.signal,
-      cf: { cacheTtl: 0, cacheEverything: false, scrapeShield: false }
-    });
-    clearTimeout(timer);
-
-    let text = '';
-    let textError = '';
-    try { text = await r.text(); } catch (e) { textError = s(e && (e.stack || e.message)) || String(e); }
-
-    const responseHeaders = {};
-    try { r.headers.forEach((v, k) => { responseHeaders[k] = v; }); } catch (_) {}
-
-    const d = htmlDiag(text, r, tag + (opt.mobile ? '-mobile' : ''), bustUrl);
-    attempts.push({
-      ...d,
-      elapsedMs: Date.now() - started,
-      redirected: !!r.redirected,
-      ok: !!r.ok,
-      responseHeaders,
-      requestHeaders: headers,
-      rawHead: s(text).slice(0, 300),
-      textError
-    });
-    return { ok: r.ok, text, status: r.status, url: r.url, headers: responseHeaders };
+    const sep = url.includes('?') ? '&' : '?';
+    const bustUrl = `${url}${sep}revdiag=753&t=${Date.now()}`;
+    const r = await fetch(bustUrl, { headers, redirect:'follow', cf: { cacheTtl: 0, cacheEverything: false } });
+    const text = await r.text();
+    attempts.push(htmlDiag(text, r, tag + (opt.mobile ? '-mobile' : ''), bustUrl));
+    return { ok: r.ok, text, status: r.status, url: r.url };
   } catch (e) {
-    clearTimeout(timer);
-    attempts.push({
-      tag: tag + (opt.mobile ? '-mobile' : ''),
-      url: bustUrl,
-      finalUrl: '',
-      status: 0,
-      bytes: 0,
-      title: '',
-      elapsedMs: Date.now() - started,
-      ok: false,
-      errorName: s(e && e.name),
-      errorMessage: s(e && e.message) || String(e),
-      errorStack: s(e && e.stack).slice(0, 800),
-      requestHeaders: headers,
-      responseHeaders: {},
-      rawHead: ''
-    });
-    return { ok: false, text: '', status: 0, url: bustUrl, headers: {} };
+    attempts.push({ tag, url, finalUrl:'', status:0, bytes:0, error: s(e && e.message) || String(e), errorName: s(e && e.name), errorStack: s(e && e.stack).slice(0,800) });
+    return { ok: false, text: '', status: 0, url, error: s(e && e.message) || String(e) };
   }
 }
 
@@ -339,7 +290,7 @@ export default {
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
     const url = new URL(request.url);
     if (!/^\/api\/(result|results|payout|payouts|payoff|refund|dividend)/.test(url.pathname)) {
-      return json({ ok: true, rev: REV, endpoints: ['/api/result'], message: 'Rev752 result worker alive / root index.js / fetch exception diagnostic'  });
+      return json({ ok: true, rev: REV, endpoints: ['/api/result'], message: 'Rev753 result worker alive / root index.js / fetch exception diagnostic'  });
     }
 
     let body = {};
@@ -388,17 +339,9 @@ export default {
       containsWide:!!a.containsWide,
       containsSanrenpuku:!!a.containsSanrenpuku,
       head:a.head || '',
-      rawHead:a.rawHead || '',
-      elapsedMs:a.elapsedMs || 0,
-      redirected:!!a.redirected,
-      ok:!!a.ok,
-      error:a.error || a.errorMessage || '',
+      error:a.error || '',
       errorName:a.errorName || '',
-      errorMessage:a.errorMessage || '',
-      errorStack:a.errorStack || '',
-      responseHeaders:a.responseHeaders || {},
-      requestHeaders:a.requestHeaders || {},
-      textError:a.textError || ''
+      errorStack:a.errorStack || ''
     }));
     const bestDiag = htmlDiagnostics.slice().sort((a,b)=>(b.bytes||0)-(a.bytes||0))[0] || {};
     return json({
@@ -421,14 +364,10 @@ export default {
       __containsWide: !!bestDiag.containsWide,
       __containsSanrenpuku: !!bestDiag.containsSanrenpuku,
       __htmlHead: bestDiag.head || '',
-      __rawHead: bestDiag.rawHead || '',
-      __fetchError: bestDiag.error || bestDiag.errorMessage || '',
+      __fetchError: bestDiag.error || '',
       __fetchErrorName: bestDiag.errorName || '',
       __fetchErrorStack: bestDiag.errorStack || '',
-      __responseHeaders: bestDiag.responseHeaders || {},
-      __requestHeaders: bestDiag.requestHeaders || {},
-      __elapsedMs: bestDiag.elapsedMs || 0,
-      __diagnosticHint:'Rev752: fetch例外/headers/rawHeadまで診断。__htmlBytesが0/短い=fetch/block/redirect、bytes大でcontains=true=parser側修正。',
+      __diagnosticHint:'Rev753: Workerデプロイ確認用にfetch例外/HTML診断をトップ階層へ出力。__htmlBytesが0/短い=fetch/block/redirect、bytes大でcontains=true=parser側修正。',
       __bytes: bestDiag.bytes || 0
     }, 200);
   }
