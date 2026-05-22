@@ -2,7 +2,7 @@
 // Purpose: avoid HTTP 200 EMPTY loops when race.netkeiba result HTML is blocked/short.
 // Contract: keep EMPTY diagnostics, but try en.netkeiba by kaisai_date when Japanese HTML is empty or unparsable.
 
-const REV = 'rev755-result-worker-readable-contract-selfcheck';
+const REV = 'rev753-result-worker-fetch-exception-diag';
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
@@ -108,7 +108,7 @@ async function fetchText(url, attempts, tag, opt = {}) {
   };
   try {
     const sep = url.includes('?') ? '&' : '?';
-    const bustUrl = `${url}${sep}revdiag=755&t=${Date.now()}`;
+    const bustUrl = `${url}${sep}revdiag=753&t=${Date.now()}`;
     const r = await fetch(bustUrl, { headers, redirect:'follow', cf: { cacheTtl: 0, cacheEverything: false } });
     const text = await r.text();
     attempts.push(htmlDiag(text, r, tag + (opt.mobile ? '-mobile' : ''), bustUrl));
@@ -289,11 +289,8 @@ export default {
   async fetch(request) {
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
     const url = new URL(request.url);
-    if (url.pathname === '/api/selfcheck') {
-      return json({ ok:true, rev:REV, workerRoot:true, main:'index.js', contract:'readable-result-payout', endpoints:['/api/result','/api/selfcheck'], deployedAt:'rev755' }, 200);
-    }
-    if (!/^\/api\/(selfcheck|result|results|payout|payouts|payoff|refund|dividend)/.test(url.pathname)) {
-      return json({ ok: true, rev: REV, workerRoot:true, main:'index.js', endpoints: ['/api/result','/api/selfcheck'], message: 'Rev755 result worker alive / readable rollback contract'  });
+    if (!/^\/api\/(result|results|payout|payouts|payoff|refund|dividend)/.test(url.pathname)) {
+      return json({ ok: true, rev: REV, endpoints: ['/api/result'], message: 'Rev753 result worker alive / root index.js / fetch exception diagnostic'  });
     }
 
     let body = {};
@@ -370,7 +367,7 @@ export default {
       __fetchError: bestDiag.error || '',
       __fetchErrorName: bestDiag.errorName || '',
       __fetchErrorStack: bestDiag.errorStack || '',
-      __diagnosticHint:'Rev755: readable rollback contract + selfcheck. Worker未デプロイならフロント側で停止。__htmlBytesが0/短い=fetch/block/redirect、bytes大でcontains=true=parser側修正。',
+      __diagnosticHint:'Rev753: Workerデプロイ確認用にfetch例外/HTML診断をトップ階層へ出力。__htmlBytesが0/短い=fetch/block/redirect、bytes大でcontains=true=parser側修正。',
       __bytes: bestDiag.bytes || 0
     }, 200);
   }
