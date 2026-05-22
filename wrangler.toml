@@ -1,7 +1,4 @@
 name = "rev-work-result"
-main = "rev-work-result-rev707.js"
+main = "rev-work-result-rev709.js"
 compatibility_date = "2026-05-22"
-
-[vars]
-WORKER_MODE = "payout-parser"
-REV = "707"
+workers_dev = true
