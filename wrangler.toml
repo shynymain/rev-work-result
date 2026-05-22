@@ -1,4 +1,4 @@
 name = "rev-work-result"
-main = "rev-work-result-rev713.js"
-compatibility_date = "2025-05-01"
+main = "rev-work-result-rev714.js"
+compatibility_date = "2026-05-22"
 workers_dev = true
