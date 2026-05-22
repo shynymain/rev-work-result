@@ -1,8 +1,8 @@
-// Rev748 result Worker: Japanese result page + en.netkeiba payback-list fallback
+// Rev750 result Worker: Japanese result page + en.netkeiba payback-list fallback + top-level HTML diagnostics
 // Purpose: avoid HTTP 200 EMPTY loops when race.netkeiba result HTML is blocked/short.
 // Contract: keep EMPTY diagnostics, but try en.netkeiba by kaisai_date when Japanese HTML is empty or unparsable.
 
-const REV = 'rev749-result-worker-html-dump-diagnostic';
+const REV = 'rev750-result-worker-html-topdiag';
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
@@ -326,6 +326,22 @@ export default {
       }
     }
 
+    const htmlDiagnostics = attempts.map(a => ({
+      tag:a.tag,
+      status:a.status,
+      bytes:a.bytes || 0,
+      finalUrl:a.finalUrl || a.url || '',
+      url:a.url || '',
+      title:a.title || '',
+      containsRaceTable:!!a.containsRaceTable,
+      containsPayback:!!a.containsPayback,
+      containsUmaRen:!!a.containsUmaRen,
+      containsWide:!!a.containsWide,
+      containsSanrenpuku:!!a.containsSanrenpuku,
+      head:a.head || '',
+      error:a.error || ''
+    }));
+    const bestDiag = htmlDiagnostics.slice().sort((a,b)=>(b.bytes||0)-(a.bytes||0))[0] || {};
     return json({
       ok:false,
       empty:true,
@@ -335,9 +351,19 @@ export default {
       received: body,
       query:Object.fromEntries(url.searchParams),
       __attempts:attempts,
-      __htmlDiagnostics: attempts.map(a => ({tag:a.tag,status:a.status,bytes:a.bytes,finalUrl:a.finalUrl,title:a.title,containsRaceTable:a.containsRaceTable,containsPayback:a.containsPayback,containsUmaRen:a.containsUmaRen,containsWide:a.containsWide,containsSanrenpuku:a.containsSanrenpuku,head:a.head,error:a.error})),
-      __diagnosticHint:'Rev749: HTML取得/redirect/block/parser判定用。bytesが短い場合はnetkeiba側block/redirect、bytesが大きくcontains=trueならparser側修正。',
-      __bytes:0
+      __htmlDiagnostics: htmlDiagnostics,
+      __htmlBytes: bestDiag.bytes || 0,
+      __finalUrl: bestDiag.finalUrl || bestDiag.url || '',
+      __status: bestDiag.status || 0,
+      __title: bestDiag.title || '',
+      __containsRaceTable: !!bestDiag.containsRaceTable,
+      __containsPayback: !!bestDiag.containsPayback,
+      __containsUmaRen: !!bestDiag.containsUmaRen,
+      __containsWide: !!bestDiag.containsWide,
+      __containsSanrenpuku: !!bestDiag.containsSanrenpuku,
+      __htmlHead: bestDiag.head || '',
+      __diagnosticHint:'Rev750: Workerデプロイ確認用にHTML診断をトップ階層へ出力。__htmlBytesが0/短い=fetch/block/redirect、bytes大でcontains=true=parser側修正。',
+      __bytes: bestDiag.bytes || 0
     }, 200);
   }
 };
