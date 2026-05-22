@@ -1,0 +1,13 @@
+{
+  "name": "rev-work-result-rev743",
+  "version": "743.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev"
+  },
+  "devDependencies": {
+    "wrangler": "latest"
+  }
+}
