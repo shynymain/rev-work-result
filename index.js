@@ -2,7 +2,7 @@
 // Purpose: avoid HTTP 200 EMPTY loops when race.netkeiba result HTML is blocked/short.
 // Contract: keep EMPTY diagnostics, but try en.netkeiba by kaisai_date when Japanese HTML is empty or unparsable.
 
-const REV = 'rev748-result-worker-root-html-en-fallback';
+const REV = 'rev749-result-worker-html-dump-diagnostic';
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
@@ -21,6 +21,24 @@ function s(v) { return v == null ? '' : String(v).trim(); }
 function digits(v) { return s(v).replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0)); }
 function yenToNum(v) { const m = digits(v).match(/(?:￥|¥)?\s*([0-9][0-9,]*)\s*(?:円)?/); return m ? m[1].replace(/,/g, '') : ''; }
 function isIntLine(v, min, max) { const m = digits(v).match(/^\d{1,2}$/); if (!m) return false; const n = parseInt(m[0], 10); return n >= min && n <= max; }
+function htmlTitle(html){ const m=s(html).match(/<title[^>]*>([\s\S]*?)<\/title>/i); return m ? stripTags(m[1]).slice(0,120) : ''; }
+function htmlDiag(text, res, tag, url){
+  const plain=stripTags(text);
+  return {
+    tag,
+    url,
+    finalUrl: res && res.url || url,
+    status: res && res.status || 0,
+    bytes: text ? text.length : 0,
+    title: htmlTitle(text),
+    containsRaceTable: /(ResultTable|RaceTable|着順|馬番|Horse|Full Result|FP\s*BK\s*PP)/i.test(text||plain),
+    containsPayback: /(払戻|配当|Starting Prices|Payback|Payout|Dividend)/i.test(text||plain),
+    containsUmaRen: /(馬連|Quinella)(?! Place)/i.test(text||plain),
+    containsWide: /(ワイド|Quinella Place)/i.test(text||plain),
+    containsSanrenpuku: /(三連複|3連複|Trio)/i.test(text||plain),
+    head: plain.slice(0,180)
+  };
+}
 function stripTags(html) {
   return s(html)
     .replace(/<script[\s\S]*?<\/script>/gi, ' ')
@@ -76,32 +94,40 @@ async function readBody(request) {
   try { return JSON.parse(text); } catch (_) { return Object.fromEntries(new URLSearchParams(text)); }
 }
 
-async function fetchText(url, attempts, tag) {
+async function fetchText(url, attempts, tag, opt = {}) {
+  const uaDesktop = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125 Safari/537.36';
+  const uaMobile = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1';
   const headers = {
-    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125 Safari/537.36',
-    'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    'accept-language': 'ja,en-US;q=0.9,en;q=0.8',
-    'referer': 'https://race.netkeiba.com/',
-    'cache-control': 'no-cache'
+    'user-agent': opt.mobile ? uaMobile : uaDesktop,
+    'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    'accept-language': opt.lang || 'ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7',
+    'referer': opt.referer || 'https://race.netkeiba.com/',
+    'cache-control': 'no-cache',
+    'pragma': 'no-cache',
+    'upgrade-insecure-requests': '1'
   };
   try {
-    const r = await fetch(url, { headers, cf: { cacheTtl: 0, cacheEverything: false } });
+    const sep = url.includes('?') ? '&' : '?';
+    const bustUrl = `${url}${sep}revdiag=749&t=${Date.now()}`;
+    const r = await fetch(bustUrl, { headers, redirect:'follow', cf: { cacheTtl: 0, cacheEverything: false } });
     const text = await r.text();
-    attempts.push({ tag, url, status: r.status, bytes: text.length, head: stripTags(text).slice(0, 90) });
-    return { ok: r.ok, text, status: r.status };
+    attempts.push(htmlDiag(text, r, tag + (opt.mobile ? '-mobile' : ''), bustUrl));
+    return { ok: r.ok, text, status: r.status, url: r.url };
   } catch (e) {
     attempts.push({ tag, url, error: s(e && e.message) || String(e) });
-    return { ok: false, text: '', status: 0 };
+    return { ok: false, text: '', status: 0, url };
   }
 }
 
 async function fetchJapaneseHtml(raceId, attempts) {
   const urls = [
     `https://race.netkeiba.com/race/result.html?race_id=${encodeURIComponent(raceId)}&rf=race_submenu`,
-    `https://db.netkeiba.com/race/${encodeURIComponent(raceId)}/`
+    `https://race.netkeiba.com/race/payback.html?race_id=${encodeURIComponent(raceId)}`,
+    `https://db.netkeiba.com/race/${encodeURIComponent(raceId)}/`,
+    `https://sp.netkeiba.com/race/result.html?race_id=${encodeURIComponent(raceId)}`
   ];
   for (const u of urls) {
-    const r = await fetchText(u, attempts, 'jp-result');
+    const r = await fetchText(u, attempts, 'jp-result', { mobile: /sp\.netkeiba/.test(u), referer:'https://race.netkeiba.com/' });
     if (r.ok && r.text.length > 3000 && /(払戻|着順|馬連|ワイド|三連複|3連複|Result|Quinella)/.test(r.text)) return r.text;
   }
   return '';
@@ -114,7 +140,7 @@ async function fetchEnglishPaybackHtml(raceId, attempts) {
     `https://en.netkeiba.com/race/result.html?race_id=${encodeURIComponent(raceId)}`
   ];
   for (const u of urls) {
-    const r = await fetchText(u, attempts, 'en-payback');
+    const r = await fetchText(u, attempts, 'en-payback', { lang:'en-US,en;q=0.9,ja;q=0.6', referer:'https://en.netkeiba.com/' });
     if (r.ok && r.text.length > 3000 && /(Starting Prices|Quinella|Trio|Trifecta|Full Result)/i.test(r.text)) return r.text;
   }
   return '';
@@ -264,7 +290,7 @@ export default {
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
     const url = new URL(request.url);
     if (!/^\/api\/(result|results|payout|payouts|payoff|refund|dividend)/.test(url.pathname)) {
-      return json({ ok: true, rev: REV, endpoints: ['/api/result'], message: 'Rev748 result worker alive / root index.js' });
+      return json({ ok: true, rev: REV, endpoints: ['/api/result'], message: 'Rev749 result worker alive / root index.js / html diagnostic'  });
     }
 
     let body = {};
@@ -309,6 +335,8 @@ export default {
       received: body,
       query:Object.fromEntries(url.searchParams),
       __attempts:attempts,
+      __htmlDiagnostics: attempts.map(a => ({tag:a.tag,status:a.status,bytes:a.bytes,finalUrl:a.finalUrl,title:a.title,containsRaceTable:a.containsRaceTable,containsPayback:a.containsPayback,containsUmaRen:a.containsUmaRen,containsWide:a.containsWide,containsSanrenpuku:a.containsSanrenpuku,head:a.head,error:a.error})),
+      __diagnosticHint:'Rev749: HTML取得/redirect/block/parser判定用。bytesが短い場合はnetkeiba側block/redirect、bytesが大きくcontains=trueならparser側修正。',
       __bytes:0
     }, 200);
   }
