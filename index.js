@@ -2,7 +2,7 @@
 // Purpose: avoid HTTP 200 EMPTY loops when race.netkeiba result HTML is blocked/short.
 // Contract: keep EMPTY diagnostics, but try en.netkeiba by kaisai_date when Japanese HTML is empty or unparsable.
 
-const REV = 'rev753-result-worker-fetch-exception-diag';
+const REV = 'rev754-result-worker-readable-rollback-diag';
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
@@ -108,7 +108,7 @@ async function fetchText(url, attempts, tag, opt = {}) {
   };
   try {
     const sep = url.includes('?') ? '&' : '?';
-    const bustUrl = `${url}${sep}revdiag=753&t=${Date.now()}`;
+    const bustUrl = `${url}${sep}revdiag=754&t=${Date.now()}`;
     const r = await fetch(bustUrl, { headers, redirect:'follow', cf: { cacheTtl: 0, cacheEverything: false } });
     const text = await r.text();
     attempts.push(htmlDiag(text, r, tag + (opt.mobile ? '-mobile' : ''), bustUrl));
@@ -367,7 +367,7 @@ export default {
       __fetchError: bestDiag.error || '',
       __fetchErrorName: bestDiag.errorName || '',
       __fetchErrorStack: bestDiag.errorStack || '',
-      __diagnosticHint:'Rev753: Workerデプロイ確認用にfetch例外/HTML診断をトップ階層へ出力。__htmlBytesが0/短い=fetch/block/redirect、bytes大でcontains=true=parser側修正。',
+      __diagnosticHint:'Rev754: 読めていたRev系統へフロント側を戻しつつ、Workerはfetch例外/HTML診断を維持。__htmlBytesが0/短い=fetch/block/redirect、bytes大でcontains=true=parser側修正。',
       __bytes: bestDiag.bytes || 0
     }, 200);
   }
