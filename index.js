@@ -1,8 +1,8 @@
-// Rev747 result Worker: Japanese result page + en.netkeiba payback-list fallback
+// Rev748 result Worker: Japanese result page + en.netkeiba payback-list fallback
 // Purpose: avoid HTTP 200 EMPTY loops when race.netkeiba result HTML is blocked/short.
 // Contract: keep EMPTY diagnostics, but try en.netkeiba by kaisai_date when Japanese HTML is empty or unparsable.
 
-const REV = 'rev747-result-en-payback-fallback';
+const REV = 'rev748-result-worker-root-html-en-fallback';
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
@@ -264,7 +264,7 @@ export default {
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
     const url = new URL(request.url);
     if (!/^\/api\/(result|results|payout|payouts|payoff|refund|dividend)/.test(url.pathname)) {
-      return json({ ok: true, rev: REV, endpoints: ['/api/result'], message: 'Rev747 result worker alive / root index.js' });
+      return json({ ok: true, rev: REV, endpoints: ['/api/result'], message: 'Rev748 result worker alive / root index.js' });
     }
 
     let body = {};
